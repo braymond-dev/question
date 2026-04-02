@@ -1,0 +1,41 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: trivia-db
+    environment:
+      POSTGRES_DB: trivia_mvp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d trivia_mvp"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trivia-app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/trivia_mvp
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL_FACT_PLAN: ${OPENAI_MODEL_FACT_PLAN:-gpt-4.1-mini}
+      OPENAI_MODEL_FINALIZE: ${OPENAI_MODEL_FINALIZE:-gpt-4.1-mini}
+      OPENAI_MODEL_EMBEDDING: ${OPENAI_MODEL_EMBEDDING:-text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "3000:3000"
+    command: sh -c "npm run db:push && npm run dev:docker"
+
+volumes:
+  postgres_data:
