@@ -35,6 +35,13 @@ type GenerationRun = {
   createdAt: string;
 };
 
+type SuccessPoint = {
+  x: number;
+  y: number;
+  label: string;
+  createdAt: string;
+};
+
 function formatTimestamp(value: string) {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -94,6 +101,137 @@ function buildGenerationRuns(attempts: AdminData["recentAttempts"]): GenerationR
   return runs.reverse();
 }
 
+function buildSuccessPoints(runs: GenerationRun[]): SuccessPoint[] {
+  return runs
+    .filter((run) => run.status === "accepted")
+    .map((run, index) => ({
+      x: index + 1,
+      y: run.failedAttempts,
+      label: run.label,
+      createdAt: run.createdAt
+    }));
+}
+
+function EfficiencyLineChart({ points }: { points: SuccessPoint[] }) {
+  if (points.length === 0) {
+    return (
+      <div className="mt-6 rounded-2xl border border-dashed border-slate-300 px-6 py-10 text-sm text-slate-500">
+        No successful generations yet, so the efficiency line chart will appear
+        once accepted runs start coming in.
+      </div>
+    );
+  }
+
+  const chartWidth = 720;
+  const chartHeight = 260;
+  const padding = 28;
+  const maxY = Math.max(...points.map((point) => point.y), 1);
+
+  const getX = (index: number) =>
+    padding +
+    (points.length === 1
+      ? (chartWidth - padding * 2) / 2
+      : (index / (points.length - 1)) * (chartWidth - padding * 2));
+
+  const getY = (value: number) =>
+    chartHeight - padding - (value / maxY) * (chartHeight - padding * 2);
+
+  const linePath = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${getX(index)} ${getY(point.y)}`)
+    .join(" ");
+
+  const yTicks = Array.from({ length: maxY + 1 }, (_, index) => maxY - index);
+
+  return (
+    <div className="mt-6">
+      <div className="mb-3 flex items-center justify-between text-xs uppercase tracking-[0.14em] text-slate-500">
+        <span>X axis: successful generations</span>
+        <span>Y axis: failed attempts before success</span>
+      </div>
+
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white/80 p-4">
+        <svg
+          viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+          className="h-[260px] min-w-[720px] w-full"
+          role="img"
+          aria-label="Line chart of failed attempts before each successful generation"
+        >
+          {yTicks.map((tick) => {
+            const y = getY(tick);
+            return (
+              <g key={tick}>
+                <line
+                  x1={padding}
+                  y1={y}
+                  x2={chartWidth - padding}
+                  y2={y}
+                  stroke="#dbe4ef"
+                  strokeDasharray="4 6"
+                />
+                <text
+                  x={8}
+                  y={y + 4}
+                  fontSize="11"
+                  fill="#64748b"
+                >
+                  {tick}
+                </text>
+              </g>
+            );
+          })}
+
+          <line
+            x1={padding}
+            y1={chartHeight - padding}
+            x2={chartWidth - padding}
+            y2={chartHeight - padding}
+            stroke="#94a3b8"
+          />
+          <line
+            x1={padding}
+            y1={padding}
+            x2={padding}
+            y2={chartHeight - padding}
+            stroke="#94a3b8"
+          />
+
+          <path
+            d={linePath}
+            fill="none"
+            stroke="#0f766e"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+
+          {points.map((point, index) => {
+            const x = getX(index);
+            const y = getY(point.y);
+
+            return (
+              <g key={`${point.label}-${point.x}`}>
+                <circle cx={x} cy={y} r="5" fill="#0f766e" />
+                <text
+                  x={x}
+                  y={chartHeight - 8}
+                  textAnchor="middle"
+                  fontSize="11"
+                  fill="#64748b"
+                >
+                  {point.x}
+                </text>
+                <title>{`${point.label}: ${point.y} failed attempt(s) before success on ${formatTimestamp(
+                  point.createdAt
+                )}`}</title>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 function StatCard({
   label,
   value,
@@ -130,6 +268,7 @@ export async function AdminDashboard() {
   };
 
   const runs = buildGenerationRuns(data.recentAttempts);
+  const successPoints = buildSuccessPoints(runs);
   const maxAttempts = Math.max(...runs.map((run) => run.totalAttempts), 1);
   const acceptedRuns = runs.filter((run) => run.status === "accepted");
   const totalRejectedAttempts = data.recentAttempts.filter(
@@ -186,14 +325,17 @@ export async function AdminDashboard() {
                 Generation Efficiency
               </h2>
               <p className="mt-2 text-sm text-slate-600">
-                Each bar is one generation run. Taller bars mean more retries
-                before an accepted question.
+                The line chart tracks how many failed attempts happened before
+                each successful generation. The bars below still show run-by-run
+                totals.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700">
               Attempt acceptance rate: {acceptanceRate}%
             </div>
           </div>
+
+          <EfficiencyLineChart points={successPoints} />
 
           <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {runs.map((run) => (
