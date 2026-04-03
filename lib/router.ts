@@ -1,9 +1,11 @@
 import { and, count, desc, eq, gte, sql } from "drizzle-orm";
 
 import { DEFAULT_SUBTOPICS, CATEGORIES, DIFFICULTIES, type Category, type Difficulty } from "@/lib/constants";
+import { testTriviaItems, triviaItems } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { daysAgo } from "@/lib/utils";
-import { triviaItems } from "@/db/schema";
+
+export type PipelineTarget = "live" | "test";
 
 type RouteChoiceInput = {
   requestedCategory?: Category;
@@ -23,29 +25,34 @@ function pickLeastUsed<T extends string>(items: Array<{ key: T; uses: number }>)
 }
 
 export async function chooseGenerationRoute(
-  input: RouteChoiceInput
+  input: RouteChoiceInput,
+  pipelineTarget: PipelineTarget = "live"
 ): Promise<RouteChoice> {
   const difficulty =
     input.requestedDifficulty ??
     DIFFICULTIES[Math.floor(Math.random() * DIFFICULTIES.length)];
 
   const category =
-    input.requestedCategory ?? (await chooseLeastUsedCategory());
+    input.requestedCategory ?? (await chooseLeastUsedCategory(pipelineTarget));
 
-  const subtopic = await chooseBalancedSubtopic(category);
+  const subtopic = await chooseBalancedSubtopic(category, pipelineTarget);
 
   return { category, difficulty, subtopic };
 }
 
-async function chooseLeastUsedCategory(): Promise<Category> {
+async function chooseLeastUsedCategory(
+  pipelineTarget: PipelineTarget
+): Promise<Category> {
+  const itemsTable = pipelineTarget === "test" ? testTriviaItems : triviaItems;
+
   const recentCounts = await getDb()
     .select({
-      category: triviaItems.category,
+      category: itemsTable.category,
       uses: count()
     })
-    .from(triviaItems)
-    .where(gte(triviaItems.createdAt, daysAgo(14)))
-    .groupBy(triviaItems.category);
+    .from(itemsTable)
+    .where(gte(itemsTable.createdAt, daysAgo(14)))
+    .groupBy(itemsTable.category);
 
   const usageMap = new Map(recentCounts.map((row) => [row.category, row.uses]));
 
@@ -57,22 +64,26 @@ async function chooseLeastUsedCategory(): Promise<Category> {
   );
 }
 
-async function chooseBalancedSubtopic(category: Category) {
+async function chooseBalancedSubtopic(
+  category: Category,
+  pipelineTarget: PipelineTarget
+) {
   const subtopics = DEFAULT_SUBTOPICS[category];
+  const itemsTable = pipelineTarget === "test" ? testTriviaItems : triviaItems;
 
   const recentCounts = await getDb()
     .select({
-      subtopic: triviaItems.subtopic,
+      subtopic: itemsTable.subtopic,
       uses: count()
     })
-    .from(triviaItems)
+    .from(itemsTable)
     .where(
       and(
-        eq(triviaItems.category, category),
-        gte(triviaItems.createdAt, daysAgo(14))
+        eq(itemsTable.category, category),
+        gte(itemsTable.createdAt, daysAgo(14))
       )
     )
-    .groupBy(triviaItems.subtopic)
+    .groupBy(itemsTable.subtopic)
     .orderBy(desc(sql<number>`count(*)`));
 
   const usageMap = new Map(recentCounts.map((row) => [row.subtopic, row.uses]));

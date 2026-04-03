@@ -1,9 +1,15 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 
-import { triviaEmbeddings, triviaItems } from "@/db/schema";
+import {
+  testTriviaEmbeddings,
+  testTriviaItems,
+  triviaEmbeddings,
+  triviaItems
+} from "@/db/schema";
 import { NOVELTY_CONFIG } from "@/lib/constants";
 import { getDb } from "@/lib/db";
 import { cosineSimilarity, parseVectorLiteral } from "@/lib/embeddings";
+import type { PipelineTarget } from "@/lib/router";
 import type { FactPlan } from "@/lib/types";
 import { daysAgo, clamp, dedupeStrings } from "@/lib/utils";
 
@@ -33,32 +39,37 @@ export type NoveltyResult = {
 export async function getPriorMemory(input: {
   category: string;
   subtopic: string;
+  pipelineTarget?: PipelineTarget;
 }) {
   const db = getDb();
+  const itemsTable =
+    input.pipelineTarget === "test" ? testTriviaItems : triviaItems;
+  const embeddingsTable =
+    input.pipelineTarget === "test" ? testTriviaEmbeddings : triviaEmbeddings;
 
   const recentItems = await db
     .select({
-      id: triviaItems.id,
-      questionText: triviaItems.questionText,
-      canonicalFact: triviaItems.canonicalFact,
-      answerText: triviaItems.answerText,
-      primaryEntity: triviaItems.primaryEntity,
-      relationshipType: triviaItems.relationshipType,
-      category: triviaItems.category,
-      subtopic: triviaItems.subtopic,
-      createdAt: triviaItems.createdAt,
-      factEmbedding: triviaEmbeddings.factEmbedding,
-      questionEmbedding: triviaEmbeddings.questionEmbedding
+      id: itemsTable.id,
+      questionText: itemsTable.questionText,
+      canonicalFact: itemsTable.canonicalFact,
+      answerText: itemsTable.answerText,
+      primaryEntity: itemsTable.primaryEntity,
+      relationshipType: itemsTable.relationshipType,
+      category: itemsTable.category,
+      subtopic: itemsTable.subtopic,
+      createdAt: itemsTable.createdAt,
+      factEmbedding: embeddingsTable.factEmbedding,
+      questionEmbedding: embeddingsTable.questionEmbedding
     })
-    .from(triviaItems)
-    .leftJoin(triviaEmbeddings, eq(triviaEmbeddings.triviaItemId, triviaItems.id))
+    .from(itemsTable)
+    .leftJoin(embeddingsTable, eq(embeddingsTable.triviaItemId, itemsTable.id))
     .where(
       and(
-        eq(triviaItems.category, input.category),
-        gte(triviaItems.createdAt, daysAgo(NOVELTY_CONFIG.recentWindowDays))
+        eq(itemsTable.category, input.category),
+        gte(itemsTable.createdAt, daysAgo(NOVELTY_CONFIG.recentWindowDays))
       )
     )
-    .orderBy(desc(triviaItems.createdAt))
+    .orderBy(desc(itemsTable.createdAt))
     .limit(NOVELTY_CONFIG.maxRecentTriviaLookup);
 
   const sameSubtopic = recentItems.filter((item) => item.subtopic === input.subtopic);
@@ -105,27 +116,31 @@ export async function getPriorMemory(input: {
 
 export async function scoreNovelty(
   plan: FactPlan,
-  context: NoveltyContext
+  context: NoveltyContext & { pipelineTarget?: PipelineTarget }
 ): Promise<NoveltyResult> {
   const db = getDb();
+  const itemsTable =
+    context.pipelineTarget === "test" ? testTriviaItems : triviaItems;
+  const embeddingsTable =
+    context.pipelineTarget === "test" ? testTriviaEmbeddings : triviaEmbeddings;
 
   const recentItems = await db
     .select({
-      id: triviaItems.id,
-      questionText: triviaItems.questionText,
-      canonicalFact: triviaItems.canonicalFact,
-      answerText: triviaItems.answerText,
-      primaryEntity: triviaItems.primaryEntity,
-      relationshipType: triviaItems.relationshipType,
-      category: triviaItems.category,
-      subtopic: triviaItems.subtopic,
-      questionEmbedding: triviaEmbeddings.questionEmbedding,
-      factEmbedding: triviaEmbeddings.factEmbedding
+      id: itemsTable.id,
+      questionText: itemsTable.questionText,
+      canonicalFact: itemsTable.canonicalFact,
+      answerText: itemsTable.answerText,
+      primaryEntity: itemsTable.primaryEntity,
+      relationshipType: itemsTable.relationshipType,
+      category: itemsTable.category,
+      subtopic: itemsTable.subtopic,
+      questionEmbedding: embeddingsTable.questionEmbedding,
+      factEmbedding: embeddingsTable.factEmbedding
     })
-    .from(triviaItems)
-    .leftJoin(triviaEmbeddings, eq(triviaEmbeddings.triviaItemId, triviaItems.id))
-    .where(gte(triviaItems.createdAt, daysAgo(120)))
-    .orderBy(desc(triviaItems.createdAt))
+    .from(itemsTable)
+    .leftJoin(embeddingsTable, eq(embeddingsTable.triviaItemId, itemsTable.id))
+    .where(gte(itemsTable.createdAt, daysAgo(120)))
+    .orderBy(desc(itemsTable.createdAt))
     .limit(60);
 
   const scoredMatches = recentItems.map((item) => {

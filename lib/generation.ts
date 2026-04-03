@@ -1,4 +1,11 @@
-import { generationAttempts, triviaEmbeddings, triviaItems } from "@/db/schema";
+import {
+  generationAttempts,
+  testGenerationAttempts,
+  testTriviaEmbeddings,
+  testTriviaItems,
+  triviaEmbeddings,
+  triviaItems
+} from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { embedTexts } from "@/lib/embeddings";
 import { getPriorMemory, scoreNovelty } from "@/lib/novelty";
@@ -8,28 +15,46 @@ import {
   sanitizeFinalizedTrivia,
   summarizeNoveltyPromptFacts
 } from "@/lib/openai";
-import { chooseGenerationRoute } from "@/lib/router";
+import { chooseGenerationRoute, type PipelineTarget } from "@/lib/router";
 import type { GenerateRequest } from "@/lib/types";
 
-const MAX_GENERATION_ATTEMPTS = 5;
+const DEFAULT_MAX_GENERATION_ATTEMPTS = 5;
 
 function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "unknown_error";
 }
 
 export async function generateTrivia(request: GenerateRequest) {
+  return generateTriviaWithOptions(request, {});
+}
+
+export async function generateTriviaWithOptions(
+  request: GenerateRequest,
+  options: {
+    maxAttempts?: number;
+    pipelineTarget?: PipelineTarget;
+  }
+) {
   const db = getDb();
   let lastFailure: string | null = null;
+  const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_GENERATION_ATTEMPTS;
+  const pipelineTarget = options.pipelineTarget ?? "live";
+  const itemsTable = pipelineTarget === "test" ? testTriviaItems : triviaItems;
+  const embeddingsTable =
+    pipelineTarget === "test" ? testTriviaEmbeddings : triviaEmbeddings;
+  const attemptsTable =
+    pipelineTarget === "test" ? testGenerationAttempts : generationAttempts;
 
-  for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const route = await chooseGenerationRoute({
       requestedCategory: request.category,
       requestedDifficulty: request.difficulty
-    });
+    }, pipelineTarget);
 
     const memory = await getPriorMemory({
       category: route.category,
-      subtopic: route.subtopic
+      subtopic: route.subtopic,
+      pipelineTarget
     });
 
     let factPlan;
@@ -44,7 +69,7 @@ export async function generateTrivia(request: GenerateRequest) {
     } catch (error) {
       lastFailure = toErrorMessage(error);
 
-      await db.insert(generationAttempts).values({
+      await db.insert(attemptsTable).values({
         requestedCategory: request.category ?? route.category,
         requestedDifficulty: request.difficulty ?? route.difficulty,
         factPlanJson: null,
@@ -61,13 +86,14 @@ export async function generateTrivia(request: GenerateRequest) {
     const noveltyResult = await scoreNovelty(factPlan, {
       factEmbedding,
       category: route.category,
-      subtopic: route.subtopic
+      subtopic: route.subtopic,
+      pipelineTarget
     });
 
     if (!noveltyResult.accepted) {
       lastFailure = noveltyResult.reason ?? "unknown_rejection";
 
-      await db.insert(generationAttempts).values({
+      await db.insert(attemptsTable).values({
         requestedCategory: request.category ?? null,
         requestedDifficulty: request.difficulty ?? null,
         factPlanJson: factPlan,
@@ -94,7 +120,7 @@ export async function generateTrivia(request: GenerateRequest) {
     }
 
     if (!finalized) {
-      await db.insert(generationAttempts).values({
+      await db.insert(attemptsTable).values({
         requestedCategory: request.category ?? null,
         requestedDifficulty: request.difficulty ?? null,
         factPlanJson: factPlan,
@@ -109,7 +135,7 @@ export async function generateTrivia(request: GenerateRequest) {
     const [questionEmbedding] = await embedTexts([finalized.question_text]);
 
     const [inserted] = await db
-      .insert(triviaItems)
+      .insert(itemsTable)
       .values({
         questionText: finalized.question_text,
         answerText: finalized.answer_text,
@@ -124,13 +150,13 @@ export async function generateTrivia(request: GenerateRequest) {
       })
       .returning();
 
-    await db.insert(triviaEmbeddings).values({
+    await db.insert(embeddingsTable).values({
       triviaItemId: inserted.id,
       questionEmbedding,
       factEmbedding
     });
 
-    await db.insert(generationAttempts).values({
+    await db.insert(attemptsTable).values({
       requestedCategory: request.category ?? null,
       requestedDifficulty: request.difficulty ?? null,
       factPlanJson: factPlan,
@@ -142,6 +168,7 @@ export async function generateTrivia(request: GenerateRequest) {
     return {
       item: inserted,
       debug: {
+        attemptsUsed: attempt + 1,
         noveltyScore: noveltyResult.score,
         route,
         strongestMatches: noveltyResult.recentMatches
@@ -150,6 +177,6 @@ export async function generateTrivia(request: GenerateRequest) {
   }
 
   throw new Error(
-    `No acceptable trivia candidate found after ${MAX_GENERATION_ATTEMPTS} attempts. Last rejection: ${lastFailure ?? "unknown"}`
+    `No acceptable trivia candidate found after ${maxAttempts} attempts. Last rejection: ${lastFailure ?? "unknown"}`
   );
 }
