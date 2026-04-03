@@ -11,11 +11,17 @@ import {
 import { chooseGenerationRoute } from "@/lib/router";
 import type { GenerateRequest } from "@/lib/types";
 
+const MAX_GENERATION_ATTEMPTS = 5;
+
+function toErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "unknown_error";
+}
+
 export async function generateTrivia(request: GenerateRequest) {
   const db = getDb();
   let lastFailure: string | null = null;
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt += 1) {
     const route = await chooseGenerationRoute({
       requestedCategory: request.category,
       requestedDifficulty: request.difficulty
@@ -26,12 +32,29 @@ export async function generateTrivia(request: GenerateRequest) {
       subtopic: route.subtopic
     });
 
-    const factPlan = await generateFactPlan({
-      category: route.category,
-      subtopic: route.subtopic,
-      difficulty: route.difficulty,
-      priorFacts: summarizeNoveltyPromptFacts(memory.compactFacts)
-    });
+    let factPlan;
+
+    try {
+      factPlan = await generateFactPlan({
+        category: route.category,
+        subtopic: route.subtopic,
+        difficulty: route.difficulty,
+        priorFacts: summarizeNoveltyPromptFacts(memory.compactFacts)
+      });
+    } catch (error) {
+      lastFailure = toErrorMessage(error);
+
+      await db.insert(generationAttempts).values({
+        requestedCategory: request.category ?? route.category,
+        requestedDifficulty: request.difficulty ?? route.difficulty,
+        factPlanJson: null,
+        status: "rejected",
+        rejectionReason: lastFailure,
+        similarityScore: null
+      });
+
+      continue;
+    }
 
     const [factEmbedding] = await embedTexts([factPlan.canonical_fact]);
 
@@ -66,8 +89,7 @@ export async function generateTrivia(request: GenerateRequest) {
         );
         break;
       } catch (error) {
-        lastFailure =
-          error instanceof Error ? error.message : "invalid_finalized_trivia";
+        lastFailure = toErrorMessage(error);
       }
     }
 
@@ -128,6 +150,6 @@ export async function generateTrivia(request: GenerateRequest) {
   }
 
   throw new Error(
-    `No acceptable trivia candidate found after 3 attempts. Last rejection: ${lastFailure ?? "unknown"}`
+    `No acceptable trivia candidate found after ${MAX_GENERATION_ATTEMPTS} attempts. Last rejection: ${lastFailure ?? "unknown"}`
   );
 }

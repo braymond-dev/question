@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { ZodError } from "zod";
 
 import { NOVELTY_CONFIG } from "@/lib/constants";
 import type { FactPlan, FinalizedTrivia } from "@/lib/types";
@@ -115,6 +116,10 @@ async function createStructuredResponse<T>({
   return JSON.parse(text) as T;
 }
 
+function formatSchemaError(error: ZodError) {
+  return JSON.stringify(error.issues);
+}
+
 export async function generateFactPlan(input: {
   category: string;
   subtopic: string;
@@ -126,6 +131,16 @@ export async function generateFactPlan(input: {
     `Target subtopic: ${input.subtopic}`,
     `Target difficulty: ${input.difficulty}`,
     "",
+    "Field limits for the returned fact plan:",
+    "- category: must be exactly one of history, science, geography, entertainment",
+    "- subtopic: 2 to 80 characters",
+    "- difficulty: must be exactly one of easy, medium, hard",
+    "- primary_entity: 1 to 120 characters",
+    "- relationship_type: 1 to 80 characters",
+    "- canonical_fact: 15 to 240 characters",
+    "- answer_text: 1 to 200 characters",
+    "- novelty_explanation: 10 to 240 characters",
+    "",
     "Prior facts and patterns to avoid:",
     ...(input.priorFacts.length > 0
       ? input.priorFacts.map((fact, index) => `${index + 1}. ${fact}`)
@@ -133,6 +148,8 @@ export async function generateFactPlan(input: {
     "",
     "Return a concise fact plan for a single trivia item.",
     "Optimize for novelty at the fact level, not just different wording.",
+    "Keep novelty_explanation to 240 characters or fewer.",
+    "novelty_explanation should be one short machine-readable sentence, not a paragraph.",
     "Avoid reusing the same answer, entity-relationship pair, or obvious neighboring fact."
   ].join("\n");
 
@@ -141,11 +158,19 @@ export async function generateFactPlan(input: {
     name: "fact_plan",
     schema: factPlanJsonSchema,
     instructions:
-      "You are building fresh trivia inventory. Return only valid JSON that matches the schema exactly.",
+      "You are building fresh trivia inventory. Return only valid JSON that matches the schema exactly. Every field must stay within its stated character limit.",
     input: prompt
   });
 
-  return factPlanSchema.parse(parsed);
+  try {
+    return factPlanSchema.parse(parsed);
+  } catch (error) {
+    if (error instanceof ZodError) {
+      throw new Error(`fact_plan_schema_error: ${formatSchemaError(error)}`);
+    }
+
+    throw error;
+  }
 }
 
 export async function finalizeTrivia(plan: FactPlan) {
@@ -158,9 +183,14 @@ export async function finalizeTrivia(plan: FactPlan) {
     `Canonical fact: ${plan.canonical_fact}`,
     `Correct answer: ${plan.answer_text}`,
     "",
+    "Field limits for the finalized trivia output:",
+    "- question_text: 20 to 120 characters",
+    "- answer_text: 1 to 200 characters",
+    "- each distractor: 1 to 200 characters",
+    "- explanation: 20 to 300 characters",
+    "",
     "Turn this into one polished multiple-choice trivia question.",
     "Make the wording clear, concise, and natural.",
-    "The question_text must be no more than 120 characters long.",
     "The correct answer and each distractor must be a short answer choice, not a sentence or explanation.",
     "Do not include years, extra clauses, or justification inside answer choices unless they are essential to the name itself.",
     "Keep answer choices short when possible, but prefer correctness over forced brevity.",
@@ -173,11 +203,19 @@ export async function finalizeTrivia(plan: FactPlan) {
     name: "finalized_trivia",
     schema: finalizedTriviaJsonSchema,
     instructions:
-      "Return only valid JSON. Do not add markdown. Distractors should be plausible but clearly incorrect.",
+      "Return only valid JSON. Do not add markdown. Distractors should be plausible but clearly incorrect. Every field must stay within its stated character limit.",
     input: prompt
   });
 
-  return finalizedTriviaSchema.parse(parsed);
+  try {
+    return finalizedTriviaSchema.parse(parsed);
+  } catch (error) {
+    if (error instanceof ZodError) {
+      throw new Error(`finalized_trivia_schema_error: ${formatSchemaError(error)}`);
+    }
+
+    throw error;
+  }
 }
 
 function normalizeWhitespace(value: string) {
